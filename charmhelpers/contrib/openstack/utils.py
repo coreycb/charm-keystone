@@ -286,6 +286,10 @@ def get_os_codename_version(vers):
 
 def get_os_version_codename(codename, version_map=OPENSTACK_CODENAMES):
     '''Determine OpenStack version number from codename.'''
+    # NOTE(coreycb): Need logic to check what track snap is from. Possibly
+    # just based on openstack-origin?
+    return 'ocata'
+
     for k, v in six.iteritems(version_map):
         if v == codename:
             return k
@@ -335,6 +339,9 @@ def get_swift_codename(version):
 def get_os_codename_package(package, fatal=True):
     '''Derive OpenStack release codename from an installed package.'''
     import apt_pkg as apt
+    # NOTE(coreycb): Need logic to check what track snap is from. Possibly
+    # just based on openstack-origin?
+    return 'ocata'
 
     cache = apt_cache()
 
@@ -438,6 +445,7 @@ def os_release(package, base='essex', reset_cache=False):
               get_os_codename_package(package, fatal=False) or
               get_os_codename_install_source(config('openstack-origin')) or
               base)
+    os_rel = 'ocata'
     return os_rel
 
 
@@ -482,6 +490,8 @@ def get_source_and_pgp_key(input):
 
 def configure_installation_source(rel):
     '''Configure apt installation source.'''
+    if rel == 'edge':
+        return
     if rel == 'distro':
         return
     elif rel == 'distro-proposed':

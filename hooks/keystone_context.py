@@ -207,6 +207,7 @@ class KeystoneContext(context.OSContextGenerator):
         from keystone_utils import (
             api_port, set_admin_token, endpoint_url, resolve_address,
             PUBLIC, ADMIN, PKI_CERTS_DIR, ensure_pki_cert_paths, ADMIN_DOMAIN,
+            snap_install_requested,
         )
         ctxt = {}
         ctxt['token'] = set_admin_token(config('admin-token'))
@@ -265,12 +266,18 @@ class KeystoneContext(context.OSContextGenerator):
             resolve_address(ADMIN),
             api_port('keystone-admin')).replace('v2.0', '')
 
+        if snap_install_requested():
+            ctxt['snap_install'] = config('openstack-origin')
+
         return ctxt
 
 
 class KeystoneLoggingContext(context.OSContextGenerator):
 
     def __call__(self):
+        from keystone_utils import (
+            snap_install_requested,
+        )
         ctxt = {}
         debug = config('debug')
         if debug:
@@ -283,6 +290,8 @@ class KeystoneLoggingContext(context.OSContextGenerator):
             log("log-level must be one of the following states "
                 "(WARNING, INFO, DEBUG, ERROR) keeping the current state.")
             ctxt['log_level'] = None
+        if snap_install_requested():
+            ctxt['snap_install'] = config('openstack-origin')
 
         return ctxt
 

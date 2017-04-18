@@ -61,6 +61,10 @@ from charmhelpers.fetch import (
     filter_installed_packages
 )
 
+from charmhelpers.fetch.snap import (
+    snap_install,
+)
+
 from charmhelpers.contrib.openstack.utils import (
     config_value_changed,
     configure_installation_source,
@@ -83,6 +87,7 @@ from keystone_utils import (
     git_install,
     migrate_database,
     save_script_rc,
+    snap_install_requested,
     synchronize_ca_if_changed,
     register_configs,
     restart_map,
@@ -170,16 +175,27 @@ def install():
     status_set('maintenance', 'Installing apt packages')
     apt_update()
     apt_install(determine_packages(), fatal=True)
-    if run_in_apache():
-        disable_unused_apache_sites()
-        if not git_install_requested():
-            service_pause('keystone')
+
+    if snap_install_requested():
+        status_set('maintenance', 'Installing keystone snap')
+        snap_install('keystone', '--edge', '--classic')
+        service_pause('snap.keystone.uwsgi')
+        service_pause('snap.keystone.nginx')
+    else:
+        if run_in_apache():
+            disable_unused_apache_sites()
+            if not git_install_requested():
+                service_pause('keystone')
 
     status_set('maintenance', 'Git install')
     git_install(config('openstack-origin-git'))
 
     unison.ensure_user(user=SSH_USER, group='juju_keystone')
-    unison.ensure_user(user=SSH_USER, group='keystone')
+    # NOTE(coreycb): can just use group='keystone' once snap has drop privs support
+    if snap_install_requested():
+        unison.ensure_user(user=SSH_USER, group='root')
+    else:
+        unison.ensure_user(user=SSH_USER, group='keystone')
 
 
 @hooks.hook('config-changed')
@@ -194,7 +210,11 @@ def config_changed():
                                           config('database-user'))
 
     unison.ensure_user(user=SSH_USER, group='juju_keystone')
-    unison.ensure_user(user=SSH_USER, group='keystone')
+    # NOTE(coreycb): can just use group='keystone' once snap has drop privs support
+    if snap_install_requested():
+        unison.ensure_user(user=SSH_USER, group='root')
+    else:
+        unison.ensure_user(user=SSH_USER, group='keystone')
     homedir = unison.get_homedir(SSH_USER)
     if not os.path.isdir(homedir):
         mkdir(homedir, SSH_USER, 'juju_keystone', 0o775)
@@ -219,7 +239,8 @@ def config_changed_postupgrade():
     # Ensure ssl dir exists and is unison-accessible
     ensure_ssl_dir()
 
-    check_call(['chmod', '-R', 'g+wrx', '/var/lib/keystone/'])
+    if not snap_install_requested():
+        check_call(['chmod', '-R', 'g+wrx', '/var/lib/keystone/'])
 
     ensure_ssl_dirs()
 
@@ -232,17 +253,27 @@ def config_changed_postupgrade():
         # when deployed from source, init scripts aren't installed
         if not git_install_requested():
             service_pause('keystone')
-        disable_unused_apache_sites()
-        CONFIGS.write(WSGI_KEYSTONE_API_CONF)
-        if not is_unit_paused_set():
-            restart_pid_check('apache2')
-    configure_https()
+        if snap_install_requested():
+            service_pause('snap.keystone.uwsgi')
+            service_pause('snap.keystone.nginx')
+        else:
+           disable_unused_apache_sites()
+           CONFIGS.write(WSGI_KEYSTONE_API_CONF)
+           if not is_unit_paused_set():
+               restart_pid_check('apache2')
+    # NOTE(coreycb): Need to add https support for snap with nginx
+    if not snap_install_requested():
+        configure_https()
     open_port(config('service-port'))
 
-    update_nrpe_config()
+    if not snap_install_requested():
+        update_nrpe_config()
     CONFIGS.write_all()
 
-    initialise_pki()
+    # NOTE(coreycb): Can dropp check once snap has alias support and
+    # drops privileges.
+    if not snap_install_requested():
+        initialise_pki()
 
     update_all_identity_relation_units()
     update_all_domain_backends()
@@ -584,7 +615,10 @@ def cluster_changed():
 
     check_peer_actions()
 
-    initialise_pki()
+    # NOTE(coreycb): Can dropp check once snap has alias support and
+    # drops privileges.
+    if not snap_install_requested():
+        initialise_pki()
 
     # Figure out if we need to mandate a sync
     units = get_ssl_sync_request_units()
@@ -758,7 +792,11 @@ def domain_backend_changed(relation_id=None, unit=None):
         db = unitdata.kv()
         if restart_nonce != db.get(domain_nonce_key):
             if not is_unit_paused_set():
-                service_restart(keystone_service())
+                if snap_install_requested():
+                    service_restart('snap.keystone.nginx')
+                    service_restart('snap.keystone.uwsgi')
+                else:
+                    service_restart(keystone_service())
             db.set(domain_nonce_key, restart_nonce)
             db.flush()
 

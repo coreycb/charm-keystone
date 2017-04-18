@@ -155,6 +155,24 @@ BASE_PACKAGES = [
     'uuid',
 ]
 
+BASE_PACKAGES_SNAP = [
+    'haproxy',
+    'openssl',
+    'python-keystoneclient',
+    'python-psycopg2',
+    'python-six',
+    'pwgen',
+    'unison',
+    'uuid',
+]
+
+SNAP_CHANNELS = [
+    'edge',
+    'beta',
+    'candidate',
+    'stable',
+]
+
 VERSION_PACKAGE = 'keystone'
 
 BASE_GIT_PACKAGES = [
@@ -179,25 +197,52 @@ GIT_PACKAGE_BLACKLIST = [
     'keystone',
 ]
 
-KEYSTONE_CONF = "/etc/keystone/keystone.conf"
-KEYSTONE_LOGGER_CONF = "/etc/keystone/logging.conf"
-KEYSTONE_CONF_DIR = os.path.dirname(KEYSTONE_CONF)
-STORED_PASSWD = "/var/lib/keystone/keystone.passwd"
-STORED_TOKEN = "/var/lib/keystone/keystone.token"
-STORED_ADMIN_DOMAIN_ID = "/var/lib/keystone/keystone.admin_domain_id"
-STORED_DEFAULT_DOMAIN_ID = "/var/lib/keystone/keystone.default_domain_id"
-SERVICE_PASSWD_PATH = '/var/lib/keystone/services.passwd'
+def snap_install_requested():
+    for channel in SNAP_CHANNELS:
+        if channel in config('openstack-origin'):
+            return True
+    return False
+
+if snap_install_requested():
+    KEYSTONE_CONF = "/var/snap/keystone/common/etc/keystone/conf.d/keystone.conf"
+    KEYSTONE_CONF_DIR = os.path.dirname(KEYSTONE_CONF)
+    KEYSTONE_NGINX_CONF = "/var/snap/keystone/common/etc/nginx/sites-enabled/keystone-nginx.conf"
+    KEYSTONE_LOGGER_CONF = "/var/snap/keystone/common/etc/keystone/logging.conf"
+    STORED_PASSWD = "/var/snap/keystone/common/lib/keystone.passwd"
+    STORED_TOKEN = "/var/snap/keystone/common/lib/keystone.token"
+    STORED_ADMIN_DOMAIN_ID = "/var/snap/keystone/common/lib/keystone.admin_domain_id"
+    STORED_DEFAULT_DOMAIN_ID = "/var/snap/keystone/common/lib/keystone.default_domain_id"
+    SERVICE_PASSWD_PATH = '/var/snap/keystone/common/lib/services.passwd'
+
+    SYNC_FLAGS_DIR = '/var/snap/keystone/common/lib/juju_sync_flags/'
+    SYNC_DIR = '/var/snap/keystone/common/lib/juju_sync/'
+    SSL_SYNC_ARCHIVE = os.path.join(SYNC_DIR, 'juju-ssl-sync.tar')
+    SSL_DIR = '/var/snap/keystone/common/lib/juju_ssl/'
+    PKI_CERTS_DIR = os.path.join(SSL_DIR, 'pki')
+    POLICY_JSON = '/var/snap/keystone/common/etc/keystone/policy.json'
+else:
+    KEYSTONE_CONF = "/etc/keystone/keystone.conf"
+    KEYSTONE_NGINX_CONF = None
+    KEYSTONE_LOGGER_CONF = "/etc/keystone/logging.conf"
+    KEYSTONE_CONF_DIR = os.path.dirname(KEYSTONE_CONF)
+    STORED_PASSWD = "/var/lib/keystone/keystone.passwd"
+    STORED_TOKEN = "/var/lib/keystone/keystone.token"
+    STORED_ADMIN_DOMAIN_ID = "/var/lib/keystone/keystone.admin_domain_id"
+    STORED_DEFAULT_DOMAIN_ID = "/var/lib/keystone/keystone.default_domain_id"
+    SERVICE_PASSWD_PATH = '/var/lib/keystone/services.passwd'
+
+    SYNC_FLAGS_DIR = '/var/lib/keystone/juju_sync_flags/'
+    SYNC_DIR = '/var/lib/keystone/juju_sync/'
+    SSL_SYNC_ARCHIVE = os.path.join(SYNC_DIR, 'juju-ssl-sync.tar')
+    SSL_DIR = '/var/lib/keystone/juju_ssl/'
+    PKI_CERTS_DIR = os.path.join(SSL_DIR, 'pki')
+    POLICY_JSON = '/etc/keystone/policy.json'
 
 HAPROXY_CONF = '/etc/haproxy/haproxy.cfg'
 APACHE_CONF = '/etc/apache2/sites-available/openstack_https_frontend'
 APACHE_24_CONF = '/etc/apache2/sites-available/openstack_https_frontend.conf'
 
 APACHE_SSL_DIR = '/etc/apache2/ssl/keystone'
-SYNC_FLAGS_DIR = '/var/lib/keystone/juju_sync_flags/'
-SYNC_DIR = '/var/lib/keystone/juju_sync/'
-SSL_SYNC_ARCHIVE = os.path.join(SYNC_DIR, 'juju-ssl-sync.tar')
-SSL_DIR = '/var/lib/keystone/juju_ssl/'
-PKI_CERTS_DIR = os.path.join(SSL_DIR, 'pki')
 SSL_CA_NAME = 'Ubuntu Cloud'
 CLUSTER_RES = 'grp_ks_vips'
 SSH_USER = 'juju_keystone'
@@ -208,7 +253,6 @@ ADMIN_DOMAIN = 'admin_domain'
 ADMIN_PROJECT = 'admin'
 DEFAULT_DOMAIN = 'default'
 SERVICE_DOMAIN = 'service_domain'
-POLICY_JSON = '/etc/keystone/policy.json'
 TOKEN_FLUSH_CRON_FILE = '/etc/cron.d/keystone-token-flush'
 WSGI_KEYSTONE_API_CONF = '/etc/apache2/sites-enabled/wsgi-openstack-api.conf'
 UNUSED_APACHE_SITE_FILES = ['/etc/apache2/sites-enabled/keystone.conf',
@@ -233,6 +277,16 @@ BASE_RESOURCE_MAP = OrderedDict([
         'contexts': [context.HAProxyContext(singlenode_mode=True),
                      keystone_context.HAProxyContext()],
         'services': ['haproxy'],
+    }),
+    (KEYSTONE_NGINX_CONF, {
+        'services': BASE_SERVICES,
+        'contexts': [keystone_context.KeystoneContext(),
+                     context.SharedDBContext(ssl_dir=KEYSTONE_CONF_DIR),
+                     context.PostgresqlDBContext(),
+                     context.SyslogContext(),
+                     keystone_context.HAProxyContext(),
+                     context.BindHostContext(),
+                     context.WorkerConfigContext()],
     }),
     (APACHE_CONF, {
         'contexts': [keystone_context.ApacheSSLContext()],
@@ -418,30 +472,54 @@ def resource_map():
 
     if os_release('keystone') < 'liberty':
         resource_map.pop(POLICY_JSON)
+
     if os.path.exists('/etc/apache2/conf-available'):
         resource_map.pop(APACHE_CONF)
     else:
         resource_map.pop(APACHE_24_CONF)
 
-    if run_in_apache():
+    if snap_install_requested():
+        if APACHE_CONF in resource_map:
+            resource_map.pop(APACHE_CONF)
+        if APACHE_24_CONF in resource_map:
+            resource_map.pop(APACHE_24_CONF)
+    else:
+        resource_map.pop(KEYSTONE_NGINX_CONF)
+
+    if snap_install_requested():
         for cfile in resource_map:
             svcs = resource_map[cfile]['services']
+            if 'apache2' in svcs:
+                svcs.remove('apache2')
             if 'keystone' in svcs:
                 svcs.remove('keystone')
+            svcs.append('snap.keystone.nginx')
+            svcs.append('snap.keystone.uwsgi')
+        # NOTE(coreycb): Hack to create empty keystone.conf. If file doesn't exist snap will write new one.
+        if os.path.isfile('/var/snap/keystone/common/etc/nginx/sites-enabled/keystone.conf'):
+            os.remove('/var/snap/keystone/common/etc/nginx/sites-enabled/keystone.conf')
+            open('/var/snap/keystone/common/etc/nginx/sites-enabled/keystone.conf', 'a').close()
+
+    if run_in_apache():
+        if not snap_install_requested():
+            for cfile in resource_map:
+                svcs = resource_map[cfile]['services']
+                if 'keystone' in svcs:
+                    svcs.remove('keystone')
                 if 'apache2' not in svcs:
                     svcs.append('apache2')
-        admin_script = os.path.join(git_determine_usr_bin(),
-                                    "keystone-wsgi-admin")
-        public_script = os.path.join(git_determine_usr_bin(),
-                                     "keystone-wsgi-public")
-        resource_map[WSGI_KEYSTONE_API_CONF] = {
-            'contexts': [
-                context.WSGIWorkerConfigContext(name="keystone",
-                                                admin_script=admin_script,
-                                                public_script=public_script),
-                keystone_context.KeystoneContext()],
-            'services': ['apache2']
-        }
+            admin_script = os.path.join(git_determine_usr_bin(),
+                                        "keystone-wsgi-admin")
+            public_script = os.path.join(git_determine_usr_bin(),
+                                         "keystone-wsgi-public")
+            resource_map[WSGI_KEYSTONE_API_CONF] = {
+                'contexts': [
+                    context.WSGIWorkerConfigContext(name="keystone",
+                                                    admin_script=admin_script,
+                                                    public_script=public_script),
+                    keystone_context.KeystoneContext()],
+                'services': ['apache2']
+            }
     return resource_map
 
 
@@ -528,17 +606,18 @@ def api_port(service):
         'keystone-public': config('service-port')
     }[service]
 
-
 def determine_packages():
     # currently all packages match service names
-    packages = set(services()).union(BASE_PACKAGES)
-    if git_install_requested():
-        packages |= set(BASE_GIT_PACKAGES)
-        packages -= set(GIT_PACKAGE_BLACKLIST)
-    if run_in_apache():
-        packages.add('libapache2-mod-wsgi')
-    return sorted(packages)
-
+    if snap_install_requested():
+        return sorted(BASE_PACKAGES_SNAP)
+    else:
+        packages = set(services()).union(BASE_PACKAGES)
+        if git_install_requested():
+            packages |= set(BASE_GIT_PACKAGES)
+            packages -= set(GIT_PACKAGE_BLACKLIST)
+        if run_in_apache():
+            packages.add('libapache2-mod-wsgi')
+        return sorted(packages)
 
 def save_script_rc():
     env_vars = {'OPENSTACK_SERVICE_KEYSTONE': 'keystone',
@@ -607,13 +686,27 @@ def keystone_service():
 def migrate_database():
     """Runs keystone-manage to initialize a new database or migrate existing"""
     log('Migrating the keystone database.', level=INFO)
-    service_stop(keystone_service())
+    if snap_install_requested():
+        service_stop('snap.keystone.nginx')
+        service_stop('snap.keystone.uwsgi')
+    else:
+        service_stop(keystone_service())
     # NOTE(jamespage) > icehouse creates a log file as root so use
     # sudo to execute as keystone otherwise keystone won't start
     # afterwards.
-    cmd = ['sudo', '-u', 'keystone', 'keystone-manage', 'db_sync']
+
+    # NOTE(coreycb): Can just use keystone-manage when snap has alias support.
+    # Also can run as keystone once snap has drop privs support.
+    if snap_install_requested():
+        cmd = ['sudo', 'keystone.manage', 'db_sync']
+    else:
+        cmd = ['sudo', '-u', 'keystone', 'keystone-manage', 'db_sync']
     subprocess.check_output(cmd)
-    service_start(keystone_service())
+    if snap_install_requested():
+        service_start('snap.keystone.nginx')
+        service_start('snap.keystone.uwsgi')
+    else:
+        service_start(keystone_service())
     time.sleep(10)
     peer_store('db-initialised', 'True')
 
@@ -1176,8 +1269,10 @@ def ensure_ssl_dirs():
         if not os.path.isdir(path):
             mkdir(path, SSH_USER, 'juju_keystone', 0o775)
         else:
-            ensure_permissions(path, user=SSH_USER, group='keystone',
-                               perms=0o755)
+            # NOTE(coreycb): can drop this check once snap has drop privs support.
+            if not snap_install_requested():
+                ensure_permissions(path, user=SSH_USER, group='keystone',
+                                   perms=0o755)
 
 
 def ensure_permissions(path, user=None, group=None, perms=None, recurse=False,
@@ -1439,7 +1534,11 @@ def ensure_pki_cert_paths():
         perms = 0o755
         for path in not_exists:
             if not os.path.isdir(path):
-                mkdir(path=path, owner=SSH_USER, group='keystone', perms=perms)
+                # NOTE(coreycb): can just use group='keystone' once snap has drop privs support.
+                if snap_install_requested():
+                    mkdir(path=path, owner=SSH_USER, group='root', perms=perms)
+                else:
+                    mkdir(path=path, owner=SSH_USER, group='keystone', perms=perms)
             else:
                 # Ensure accessible by ssh user and group (for sync).
                 ensure_permissions(path, user=SSH_USER, group='keystone',
@@ -1669,8 +1768,10 @@ def ensure_ssl_dir():
     if not os.path.isdir(SSL_DIR):
         mkdir(SSL_DIR, SSH_USER, 'keystone', perms)
     else:
-        ensure_permissions(SSL_DIR, user=SSH_USER, group='keystone',
-                           perms=perms)
+        # NOTE(coreycb): Can drop this check once snap has drop privs support
+        if not snap_install_requested():
+            ensure_permissions(SSL_DIR, user=SSH_USER, group='keystone',
+                               perms=perms)
 
 
 def get_ca(user='keystone', group='keystone'):
@@ -2333,9 +2434,12 @@ def git_post_install(projects_yaml):
             'process_name': 'keystone',
             'executable_name': os.path.join(bin_dir, 'keystone-all'),
             'config_files': ['/etc/keystone/keystone.conf'],
-            'log_file': '/var/log/keystone/keystone.log',
         }
 
+        if snap_install_requested():
+            keystone_context['log_file'] = '/var/snap/keystone/common/log/keystone.log',
+        else:
+            keystone_context['log_file'] = '/var/log/keystone/keystone.log',
         templates_dir = 'hooks/charmhelpers/contrib/openstack/templates'
         templates_dir = os.path.join(charm_dir(), templates_dir)
         render('git.upstart', '/etc/init/keystone.conf', keystone_context,
@@ -2343,7 +2447,11 @@ def git_post_install(projects_yaml):
 
     # Don't restart if the unit is supposed to be paused.
     if not is_unit_paused_set():
-        service_restart(keystone_service())
+        if snap_install_requested():
+            service_start('snap.keystone.nginx')
+            service_start('snap.keystone.uwsgi')
+        else:
+            service_start(keystone_service())
 
 
 def get_optional_interfaces():
